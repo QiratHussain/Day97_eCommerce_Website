@@ -1,0 +1,12 @@
+{% from 'bootstrap5/form.html' import render_form %}
+
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Sign Up</h2>
+
+{{ bootstrap.load_css() }}
+{{render_form(form)}}
+
+{% endblock %}
+

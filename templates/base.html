@@ -1,0 +1,150 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}My Dental Clinic{% endblock %}</title>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Georgia, serif;
+            background-color: #F8F3E9;
+            color: #4B3025;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        header {
+            padding: 25px 8%;
+            border-bottom: 1px solid #E5D8C5;
+        }
+
+        .brand {
+            font-size: 25px;
+            font-weight: bold;
+            letter-spacing: 1px;
+            color: #4B3025;
+            text-decoration: none;
+        }
+
+        /* Main */
+        main {
+            flex: 1;
+            padding: 80px 8%;
+            max-width: 1200px;
+            width: 100%;
+            margin: auto;
+        }
+
+        .hero {
+            text-align: center;
+            margin-bottom: 65px;
+        }
+
+        .hero h1 {
+            font-size: clamp(35px, 5vw, 55px);
+            margin-bottom: 18px;
+            line-height: 1.2;
+        }
+
+        .hero p {
+            font-size: 17px;
+            color: #8A7160;
+            line-height: 1.7;
+        }
+
+        /* Cards */
+        .card-container {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 25px;
+        }
+
+        .card {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: 210px;
+            padding: 35px;
+            background-color: #EFE4D3;
+            border: 1px solid #E1D0B9;
+            border-radius: 12px;
+            text-decoration: none;
+            color: #4B3025;
+            transition: 0.3s ease;
+        }
+
+        .card:hover {
+            background-color: #4B3025;
+            color: #F8F3E9;
+            transform: translateY(-5px);
+        }
+
+        .card h2 {
+            font-size: 25px;
+            margin-bottom: 12px;
+        }
+
+        .card p {
+            font-size: 15px;
+            line-height: 1.6;
+            color: #8A7160;
+            transition: 0.3s ease;
+        }
+
+        .card:hover p {
+            color: #E5D8C5;
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 22px;
+            border-top: 1px solid #E5D8C5;
+            color: #8A7160;
+            font-size: 13px;
+        }
+
+        @media (max-width: 650px) {
+            main {
+                padding: 55px 6%;
+            }
+
+            .card-container {
+                grid-template-columns: 1fr;
+            }
+
+            .hero {
+                margin-bottom: 40px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <a href="/" class="brand">My Dental Clinic</a>
+    </header>
+
+    <main>
+        {% block content %}
+
+        {% endblock %}
+    </main>
+
+    <footer>
+        &copy; {{ 2026 }} My Dental Clinic. All rights reserved.
+    </footer>
+
+</body>
+</html>

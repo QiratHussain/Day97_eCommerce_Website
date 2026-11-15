@@ -127,6 +127,43 @@
                 margin-bottom: 40px;
             }
         }
+        header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 8%;
+    background-color: #FFF6DE;
+}
+
+.logo a {
+    color: #654321;
+    font-size: 26px;
+    font-weight: bold;
+    text-decoration: none;
+}
+
+nav {
+    display: flex;
+    align-items: center;
+    gap: 25px;
+}
+
+nav a {
+    text-decoration: none;
+    color: #654321;
+    font-weight: 600;
+}
+
+.signup-btn {
+    background-color: #654321;
+    color: #FFF6DE;
+    padding: 10px 20px;
+    border-radius: 6px;
+}
+
+.signup-btn:hover {
+    background-color: #8B5E3C;
+}
     </style>
 </head>
 
@@ -134,8 +171,21 @@
 
     <header>
         <a href="/" class="brand">My Dental Clinic</a>
-    </header>
 
+        <!-- <div class="logo">
+            <a href="{{ url_for('home') }}">YourBrand</a>
+        </div> -->
+    
+        <nav>
+            {% if user.is_authenticated %}
+                <span>Hi, {{ user.name }}</span>
+                <a href="{{ url_for('logout') }}">Logout</a>
+            {% else %}
+                <a href="{{ url_for('login') }}">Login</a>
+                <a href="{{ url_for('signup') }}" class="signup-btn">Sign Up</a>
+            {% endif %}
+        </nav>
+    </header>
     <main>
         {% block content %}
 

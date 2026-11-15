@@ -69,7 +69,8 @@ def signup():
                 flash("Username taken. Try logging in.")
                 return redirect(url_for('login'))
             else:
-                new_user = User(name= signup_form.username.data, email= signup_form.email.data, password= signup_form.password.data)
+                hash_and_salted_password = generate_password_hash(signup_form.password.data, method='pbkdf2:sha256', salt_length=8)
+                new_user = User(name= signup_form.username.data, email= signup_form.email.data, password= hash_and_salted_password)
                 db.session.add(new_user)
                 db.session.commit()
                 login_user(new_user)
@@ -85,11 +86,13 @@ def login():
             if not user:
                 flash("Account not found. Sign up instead")
                 return redirect (url_for('signup'))
-            elif not login_form.password.data == user.password :
-                flash("Incorrect Password ")
             else:
-                login_user(user)
-                return redirect(url_for("booking"))
+                check_password_hash(user.password, login_form.password.data)
+                if check_password_hash(user.password, login_form.password.data):
+                    login_user(user)
+                    return redirect(url_for("booking"))
+                else:
+                    flash("Incorrect Password ")
     return render_template("login.html",form= login_form, user= current_user)
 
 @app.route("/booking")

@@ -72,7 +72,7 @@ def signup():
                 db.session.add(new_user)
                 db.session.commit()
                 login_user(new_user)
-                return render_template("booking.html", user= current_user)
+                return redirect(url_for("booking"))
     return render_template("signup.html", form= signup_form, user= current_user)
 
 @app.route("/login", methods= ['POST','GET'])
@@ -88,8 +88,12 @@ def login():
                 flash("Incorrect Password ")
             else:
                 login_user(user)
-                render_template("booking.html", user= current_user)
+                return redirect(url_for("booking"))
     return render_template("login.html",form= login_form, user= current_user)
+
+@app.route("/booking")
+def booking():
+    return render_template("booking.html", user= current_user)
 
 @app.route("/logout")
 def logout():

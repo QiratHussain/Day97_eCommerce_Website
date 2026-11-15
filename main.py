@@ -1,4 +1,4 @@
-from flask import Flask, render_template, redirect, url_for
+from flask import Flask, render_template, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import Integer, String, Float
@@ -53,11 +53,32 @@ def home():
 @app.route("/signup", methods= ['POST','GET'])
 def signup():
     signup_form= SignupForm()
+    if signup_form.validate_on_submit():
+        with app.app_context():
+            user = db.session.execute(db.select(User).where(User.name==signup_form.username.data)).scalar()
+            if user:
+                flash("Username taken. Try logging in.")
+                return redirect(url_for('login'))
+            else:
+                new_user = User(name= signup_form.username.data, email= signup_form.email.data, password= signup_form.password.data)
+                db.session.add(new_user)
+                db.session.commit()
+                return 'bookings page'
     return render_template("signup.html", form= signup_form)
 
 @app.route("/login", methods= ['POST','GET'])
 def login():
     login_form=LoginForm()
+    if login_form.validate_on_submit():
+        with app.app_context():
+            user = db.session.execute(db.select(User).where(User.name==login_form.username.data)).scalar()
+            if not user:
+                flash("Account not found. Sign up instead")
+                return redirect (url_for('signup'))
+            elif not login_form.password.data == user.password :
+                flash("Incorrect Password ")
+            else:
+                return "bookings page"
     return render_template("login.html",form= login_form)
 # -------------------------------------------------------------------------
 if __name__=="__main__":

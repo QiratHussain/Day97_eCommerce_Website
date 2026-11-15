@@ -3,9 +3,24 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h2>Sign Up</h2>
 
 {{ bootstrap.load_css() }}
+<h2>Log In</h2>
+
+
+<main class="flex-grow-1">
+    <div class="container my-4">
+      {% with messages = get_flashed_messages() %}
+        {% for m in messages %}
+          <div class="alert alert-warning alert-dismissible fade show" role="alert">
+            {{ m }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+          </div>
+        {% endfor %}
+      {% endwith %}
+    </div>
+</main>
+
 {{render_form(form)}}
 
 {% endblock %}

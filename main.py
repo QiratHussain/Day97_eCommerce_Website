@@ -6,6 +6,7 @@ from flask_wtf import FlaskForm
 from wtforms import StringField, PasswordField, SubmitField, EmailField
 from wtforms.validators import DataRequired, Length
 import os
+from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import LoginManager, UserMixin, login_user, current_user, logout_user, login_required
 from flask_bootstrap import Bootstrap5
 from dotenv import load_dotenv
@@ -92,6 +93,7 @@ def login():
     return render_template("login.html",form= login_form, user= current_user)
 
 @app.route("/booking")
+@login_required
 def booking():
     return render_template("booking.html", user= current_user)
 
@@ -106,7 +108,4 @@ if __name__=="__main__":
 # TODO: 4. appointment card
 # TODO: 5. if appointment verified, success page 
 # TODO: 6. if not verified, show wait page
-# TODO: 7. adjust navbar
 # TODO: 8. password hashing
-# TODO: 9. logout user
-# TODO: 10. protect paths

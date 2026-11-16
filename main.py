@@ -14,12 +14,14 @@ load_dotenv()
 
 app= Flask(__name__)
 
+# ---------------------------- LOG IN MANAGER ------------------------------------
 login_manager = LoginManager()
 login_manager.init_app(app)
 
 @login_manager.user_loader
 def load_user(user_id):
   return User.query.get(int(user_id))
+  
 # ---------------------------- FORMS ------------------------------------
 
 app.config['WTF_CSRF_TIME_LIMIT'] = None  
@@ -41,7 +43,9 @@ class SignupForm(FlaskForm):
 class Base(DeclarativeBase):
     pass
 
-app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///users.db"
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL")
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {"pool_pre_ping": True}
+
 db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
@@ -87,8 +91,8 @@ def login():
                 flash("Account not found. Sign up instead")
                 return redirect (url_for('signup'))
             else:
-                check_password_hash(user.password, login_form.password.data)
-                if check_password_hash(user.password, login_form.password.data):
+                correct_password= check_password_hash(user.password, login_form.password.data)
+                if correct_password:
                     login_user(user)
                     return redirect(url_for("booking"))
                 else:
@@ -111,4 +115,6 @@ if __name__=="__main__":
 # TODO: 4. appointment card
 # TODO: 5. if appointment verified, success page 
 # TODO: 6. if not verified, show wait page
-# TODO: 8. password hashing
+# TODO: 7. get webhook url, to do this:
+# TODO: 8. deploy on vercel, to do this:
+# TODO: 9. connect with postgresql

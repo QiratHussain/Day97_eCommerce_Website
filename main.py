@@ -11,7 +11,7 @@ from flask_login import LoginManager, UserMixin, login_user, current_user, logou
 from flask_bootstrap import Bootstrap5
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+load_dotenv()
 
 app = Flask(__name__)
 app.config['WTF_CSRF_TIME_LIMIT'] = None

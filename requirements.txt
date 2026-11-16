@@ -1,0 +1,10 @@
+safepay-python
+Flask
+Flask-SQLAlchemy
+SQLAlchemy
+Flask-WTF
+WTForms
+Werkzeug
+Flask-Login
+Flask-Bootstrap
+python-dotenv

@@ -29,6 +29,16 @@ app.config['SECRET_KEY'] = _secret_key
 
 Bootstrap5(app)
 
+# ---------------------------- PAYMENTS  ------------------------------------
+from safepay_python.safepay import *
+
+safepay = Safepay({
+    "environment": "sandbox",  
+    "apiKey":os.getenv("API_KEY") ,
+    "v1Secret": os.getenv("SAFEPAY_API_KEY"),
+    "webhookSecret": os.getenv("WEBHOOK_SECRET"),
+})
+
 # ---------------------------- DATABASE ------------------------------------
 class Base(DeclarativeBase):
     pass

@@ -155,7 +155,7 @@ def logout():
 
 # safepay system
 
-@app.route('/safepay/webhook', methods=['POST'])
+@app.route('/safepay/webhook', methods=['POST','GET'])
 def safepay_webhook():
     data = request.json
 

@@ -1,4 +1,4 @@
-from flask import Flask, render_template, redirect, url_for, flash
+from flask import Flask, render_template, redirect, url_for, flash, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import Integer, String
@@ -152,6 +152,17 @@ def booking():
 def logout():
     logout_user()
     return redirect(url_for("home"))
+
+# safepay system
+
+@app.route('/safepay/webhook', methods=['POST'])
+def safepay_webhook():
+    data = request.json
+
+    # Verify webhook signature here
+    # Update order payment status in database
+
+    return jsonify({"message": "Webhook received"}), 200
 
 # -------------------------------------------------------------------------
 if __name__ == "__main__":

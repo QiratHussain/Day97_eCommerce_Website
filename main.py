@@ -157,7 +157,7 @@ def logout():
 
 @app.route('/checkout')
 def checkout():
-    return render_template('checkout.html')
+    return render_template('checkout.html', user=current_user)
 
 @app.route('/safepay/webhook', methods=['POST'])
 def safepay_webhook():

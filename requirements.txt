@@ -1,5 +1,4 @@
 Flask
-safepay-python
 Flask-SQLAlchemy
 SQLAlchemy
 Flask-WTF
@@ -8,3 +7,5 @@ Werkzeug
 Flask-Login
 Bootstrap-Flask
 python-dotenv
+pg8000
+# safepay-python  

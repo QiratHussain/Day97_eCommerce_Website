@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+    <h1>Confirm Your Appointment</h1>
+    <p>Proceed to payment securely.</p>
+
+    <form action="{{ url_for('create_payment') }}" method="POST">
+        <button type="submit">Pay Now</button>
+    </form>
+</section>
+{% endblock %}

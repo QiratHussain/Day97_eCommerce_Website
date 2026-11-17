@@ -210,6 +210,17 @@ def checkout():
             "source": "custom",
             "webhooks": True,
         })
+        order_id = f"APPOINTMENT_{current_user.id}_{secrets.token_hex(4)}"
+        appt = Appointment(user_id=current_user.id, order_id=order_id,
+                           amount=100, status="pending")
+        db.session.add(appt)
+        db.session.commit()
+        
+        url = sp.get_checkout_url({
+            "beacon": token,
+            "orderId": order_id,
+            ...
+        })
         return redirect(url)
     return render_template('checkout.html', user=current_user)
 

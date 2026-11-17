@@ -43,15 +43,13 @@ def get_safepay():
         "webhookSecret": os.getenv("WEBHOOK_SECRET"),
     })
 
+def verify_payment(signature, data):
+    safepay = get_safepay()
 
-# is_valid = safepay.is_signature_valid({
-#     "sig": request_sig,
-#     "tracker": token
-# })
-
-# if is_valid:
-#     # Mark the order as paid in your database
-#     pass
+    return safepay.is_webhook_valid(
+        {"x-sfpy-signature": signature},
+        {"data": data}
+    )
 
 
 # ---------------------------- DATABASE ------------------------------------
@@ -100,6 +98,10 @@ class User(UserMixin, db.Model):
     email: Mapped[str] = mapped_column(String(250), nullable=False)
     password: Mapped[str] = mapped_column(String(250), nullable=False)
 
+class Appointment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    status = db.Column(db.String(20), default="pending")
+    
 
 # Create tables, but never let a temporary DB problem crash the import itself.
 try:
@@ -208,22 +210,25 @@ def checkout():
         return redirect(url)
     return render_template('checkout.html', user=current_user)
 
-
 @app.route('/safepay/webhook', methods=['POST'])
 def safepay_webhook():
-    data = request.json
 
-    # Verify webhook signature here
-    # Update order payment status in database
+    data = request.get_json(silent=True) or {}
+    signature = request.headers.get('X-SFPY-SIGNATURE')
 
-    return jsonify({"message": "Webhook received"}), 200
+    if not signature:
+        return jsonify({"error": "Missing signature"}), 400
+
+    is_valid = verify_payment(signature, data)
+
+    if not is_valid:
+        return jsonify({"error": "Invalid signature"}), 400
+
+    # Next: inspect the verified payment event,
+    # match it to your appointment, and verify its state and amount.
+
+    return jsonify({"message": "Webhook verified"}), 200
 
 # -------------------------------------------------------------------------
 if __name__ == "__main__":
     app.run(debug=True)
-
-# TODO: 4. appointment card
-# TODO: 5. if appointment verified, success page
-# TODO: 6. if not verified, show wait page
-# TODO: 7. get webhook url, to do this:
-# TODO: 8. deploy on vercel, to do this:

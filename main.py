@@ -38,6 +38,23 @@ safepay = Safepay({
     "v1Secret": os.getenv("SAFEPAY_API_KEY"),
     "webhookSecret": os.getenv("WEBHOOK_SECRET"),
 })
+payment_response = safepay.set_payment_details({
+    "amount": 100,
+    "currency": "PKR"
+})
+token = payment_response["data"]["token"]
+checkout_url = safepay.get_checkout_url({
+    "beacon": token,
+    "orderId": "ORDER_12345",
+    "redirectUrl": "url_for('checkout')",
+    "cancelUrl": "url_for('checkout')",
+    "source": "custom",
+    "webhooks": True
+})
+
+# Redirect your customer to checkout_url
+print(checkout_url)
+
 
 # ---------------------------- DATABASE ------------------------------------
 class Base(DeclarativeBase):

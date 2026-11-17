@@ -1,7 +1,7 @@
 from flask import Flask, render_template, redirect, url_for, flash, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import Integer, String
+from sqlalchemy import Integer, String, inspect, text
 from flask_wtf import FlaskForm
 from wtforms import StringField, PasswordField, SubmitField, EmailField
 from wtforms.validators import DataRequired, Length
@@ -152,10 +152,53 @@ class Appointment(db.Model):
     amount = db.Column(db.Integer)
     status = db.Column(db.String(20), default="pending")
 
+def sync_appointment_table():
+    """Bring an already-existing `appointment` table in line with the model.
+
+    db.create_all() only creates MISSING tables; it never alters existing ones.
+    If the table was created by an older version of this app, it can lack the
+    current columns (e.g. appt_id) or still have old NOT NULL columns (e.g.
+    order_id) that we no longer fill in, and every INSERT then fails.
+    This only ADDS missing columns and RELAXES leftover NOT NULL constraints;
+    it never drops columns or deletes data.
+    """
+    insp = inspect(db.engine)
+    if not insp.has_table("appointment"):
+        return
+
+    existing = {col["name"]: col for col in insp.get_columns("appointment")}
+    model_cols = {col.name: col for col in Appointment.__table__.columns}
+    is_postgres = db.engine.dialect.name == "postgresql"
+
+    with db.engine.begin() as conn:
+        for name, col in model_cols.items():
+            if name not in existing and not col.primary_key:
+                col_type = col.type.compile(dialect=db.engine.dialect)
+                conn.execute(text(f'ALTER TABLE appointment ADD COLUMN "{name}" {col_type}'))
+                print(f"INFO: added missing column appointment.{name}", file=sys.stderr)
+
+        # Old columns the app no longer writes must not block inserts.
+        if is_postgres:
+            for name, col in existing.items():
+                if name not in model_cols and not col["nullable"]:
+                    conn.execute(text(f'ALTER TABLE appointment ALTER COLUMN "{name}" DROP NOT NULL'))
+                    print(f"INFO: made legacy column appointment.{name} nullable", file=sys.stderr)
+
+    # appt_id is how redirects/webhooks find a row, so keep it unique.
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_appointment_appt_id ON appointment (appt_id)"
+            ))
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: could not add unique index on appointment.appt_id: {exc}", file=sys.stderr)
+
+
 # Create tables, but never let a temporary DB problem crash the import itself.
 try:
     with app.app_context():
         db.create_all()
+        sync_appointment_table()
 except Exception as exc:  # noqa: BLE001
     print(f"WARNING: could not create tables at startup: {exc}", file=sys.stderr)
 
@@ -256,7 +299,7 @@ def checkout():
             db.session.commit()
         except Exception as exc:  # noqa: BLE001
             db.session.rollback()
-            app.logger.error("Could not save pending appointment: %s", exc)
+            app.logger.exception("Could not save pending appointment: %s", exc)
             flash("Couldn't save your appointment. Please try again.")
             return redirect(url_for('checkout'))
 

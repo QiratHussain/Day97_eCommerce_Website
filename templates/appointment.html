@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block content %}
+        <section class="hero">
+            <h1>Your teeth deserve care.</h1>
+            <p>Your appointment is confirmed.</p>
+        </section>
+
+<section>
+  <table>
+    <thead>
+      <td>Name</td>
+      <td>Time</td>
+    </thead>
+<tr>
+  <td>{{user.name}} </td>
+  <td>anytime</td>
+</tr>
+  </table>
+</section>
+
+{% endblock  %}

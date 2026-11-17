@@ -55,6 +55,15 @@ checkout_url = safepay.get_checkout_url({
 # Redirect your customer to checkout_url
 print(checkout_url)
 
+is_valid = safepay.is_signature_valid({
+    "sig": request_sig,
+    "tracker": token
+})
+
+if is_valid:
+    # Mark the order as paid in your database
+    pass
+
 
 # ---------------------------- DATABASE ------------------------------------
 class Base(DeclarativeBase):

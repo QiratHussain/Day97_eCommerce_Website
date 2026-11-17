@@ -13,6 +13,8 @@ from flask_login import LoginManager, UserMixin, login_user, current_user, logou
 from flask_bootstrap import Bootstrap5
 from dotenv import load_dotenv
 from safepay_python.safepay import Safepay
+import asyncio
+from safepay_python.resources.payments import Payments
 
 load_dotenv()
 
@@ -178,13 +180,23 @@ def logout():
 
 # safepay system
 
+
+
 @app.route('/checkout', methods=['GET', 'POST'])
 @login_required
 def checkout():
     if request.method == 'POST':
         sp = get_safepay()
-        resp = sp.set_payment_details({"amount": 100, "currency": "PKR"})
-        token = resp["data"]["token"]
+        try:
+            resp = asyncio.run(Payments(sp.config).create_payment(
+                {"amount": 100, "currency": "PKR"}
+            ))
+            token = resp["data"]["token"]
+        except Exception as exc:
+            app.logger.error("Safepay init failed: %s | response=%r", exc, locals().get("resp"))
+            flash("Couldn't start the payment. Please try again.")
+            return redirect(url_for('checkout'))
+
         url = sp.get_checkout_url({
             "beacon": token,
             "orderId": f"ORDER_{current_user.id}_{secrets.token_hex(4)}",

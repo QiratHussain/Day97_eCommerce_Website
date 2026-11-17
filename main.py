@@ -7,6 +7,8 @@ from wtforms import StringField, PasswordField, SubmitField, EmailField
 from wtforms.validators import DataRequired, Length
 import os
 import sys
+import hmac
+import hashlib
 import secrets
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import LoginManager, UserMixin, login_user, current_user, logout_user, login_required
@@ -43,13 +45,54 @@ def get_safepay():
         "webhookSecret": os.getenv("WEBHOOK_SECRET"),
     })
 
-def verify_payment(signature, data):
-    safepay = get_safepay()
+APPOINTMENT_FEE = 100  # PKR
 
-    return safepay.is_webhook_valid(
-        {"x-sfpy-signature": signature},
-        {"data": data}
-    )
+PAID_STATES = {"PAID", "PAYMENT_SUCCESS", "SUCCESS", "SUCCEEDED", "COMPLETED"}
+
+
+def verify_payment(signature, raw_body, data):
+    """Check the X-SFPY-SIGNATURE header of a webhook call.
+
+    Safepay signs the request body with HMAC-SHA512 using the webhook secret.
+    We first check the exact raw bytes we received (most reliable), then fall
+    back to the library's check (which re-serialises the parsed JSON).
+    """
+    secret = os.getenv("WEBHOOK_SECRET")
+    if not secret:
+        app.logger.error("WEBHOOK_SECRET is not set; cannot verify webhook.")
+        return False
+
+    expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha512).hexdigest()
+    if hmac.compare_digest(expected, signature):
+        return True
+
+    try:
+        return get_safepay().is_webhook_valid(
+            {"x-sfpy-signature": signature},
+            {"data": data}
+        )
+    except Exception as exc:  # noqa: BLE001
+        app.logger.error("Webhook signature check failed: %s", exc)
+        return False
+
+
+def find_value(obj, keys):
+    """Return the first string value stored under any of `keys`, searching nested dicts/lists."""
+    if isinstance(obj, dict):
+        for key in keys:
+            value = obj.get(key)
+            if isinstance(value, str) and value:
+                return value
+        for value in obj.values():
+            found = find_value(value, keys)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = find_value(item, keys)
+            if found:
+                return found
+    return None
 
 
 # ---------------------------- DATABASE ------------------------------------
@@ -99,9 +142,12 @@ class User(UserMixin, db.Model):
     password: Mapped[str] = mapped_column(String(250), nullable=False)
 
 class Appointment(db.Model):
+    __tablename__ = "appointment"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    # appt_id is the order id we hand to Safepay, so redirects/webhooks can find this row.
     appt_id = db.Column(db.String(100), unique=True, index=True)
+    # Safepay tracker id, filled in once the payment is confirmed.
     tracker = db.Column(db.String(200))
     amount = db.Column(db.Integer)
     status = db.Column(db.String(20), default="pending")
@@ -193,7 +239,7 @@ def checkout():
         sp = get_safepay()
         try:
             resp = asyncio.run(Payments(sp.config).create_payment(
-                {"amount": 100, "currency": "PKR"}
+                {"amount": APPOINTMENT_FEE, "currency": "PKR"}
             ))
             token = resp["data"]["token"]
         except Exception as exc:
@@ -201,54 +247,141 @@ def checkout():
             flash("Couldn't start the payment. Please try again.")
             return redirect(url_for('checkout'))
 
+        # One id, used both as our appointment reference and as Safepay's order_id,
+        # so the redirect and the webhook can find this exact row later.
+        appt_id = f"APPOINTMENT_{current_user.id}_{secrets.token_hex(4)}"
+        try:
+            db.session.add(Appointment(user_id=current_user.id, appt_id=appt_id,
+                                       amount=APPOINTMENT_FEE, status="pending"))
+            db.session.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.session.rollback()
+            app.logger.error("Could not save pending appointment: %s", exc)
+            flash("Couldn't save your appointment. Please try again.")
+            return redirect(url_for('checkout'))
+
         url = sp.get_checkout_url({
             "beacon": token,
-            "orderId": f"ORDER_{current_user.id}_{secrets.token_hex(4)}",
-            "redirectUrl": url_for('booking', _external=True),
+            "orderId": appt_id,
+            "redirectUrl": url_for('payment_success', _external=True),
             "cancelUrl": url_for('checkout', _external=True),
             "source": "custom",
             "webhooks": True,
         })
-        appt_id = f"APPOINTMENT_{current_user.id}_{secrets.token_hex(4)}"
-        appt = Appointment(user_id=current_user.id, appt_id=appt_id,
-                           amount=100, status="pending")
-        db.session.add(appt)
-        db.session.commit()
-        
-        url = sp.get_checkout_url({
-            "beacon": token,
-            "orderId": order_id,
-            ...
-        })
         return redirect(url)
     return render_template('checkout.html', user=current_user)
 
+
+@app.route('/payment/success')
+@login_required
+def payment_success():
+    """Safepay sends the customer here after a successful payment.
+
+    The redirect carries `sig` (HMAC of the tracker, signed with our shared
+    secret), `tracker` and `order_id`. We verify the signature, mark the
+    appointment as paid, then send the customer to the appointment page.
+    """
+    sig = request.args.get("sig")
+    tracker = request.args.get("tracker")
+    order_id = request.args.get("order_id")
+    if not (sig and tracker and order_id):
+        flash("We couldn't confirm your payment. Please try again.")
+        return redirect(url_for('checkout'))
+
+    try:
+        signature_ok = get_safepay().is_signature_valid({"sig": sig, "tracker": tracker})
+    except Exception as exc:  # noqa: BLE001
+        app.logger.error("Safepay signature check failed: %s", exc)
+        signature_ok = False
+    if not signature_ok:
+        flash("Payment could not be verified.")
+        return redirect(url_for('checkout'))
+
+    appt = db.session.execute(
+        db.select(Appointment).where(
+            Appointment.appt_id == order_id,
+            Appointment.user_id == current_user.id,
+        )
+    ).scalar()
+    if not appt:
+        flash("We couldn't find that appointment.")
+        return redirect(url_for('booking'))
+
+    if appt.status != "paid":
+        # A tracker proves ONE payment, so it can only confirm ONE appointment.
+        already_used = db.session.execute(
+            db.select(Appointment).where(
+                Appointment.tracker == tracker, Appointment.id != appt.id
+            )
+        ).scalar()
+        if already_used:
+            flash("That payment was already used for another appointment.")
+            return redirect(url_for('booking'))
+        try:
+            appt.status = "paid"
+            appt.tracker = tracker
+            db.session.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.session.rollback()
+            app.logger.error("Could not mark appointment paid: %s", exc)
+            flash("Payment received, but we couldn't save it. Please contact us.")
+            return redirect(url_for('booking'))
+
+    return redirect(url_for('appointment'))
+
+
+@app.route('/appointment')
+@login_required
+def appointment():
+    appt = db.session.execute(
+        db.select(Appointment)
+        .where(Appointment.user_id == current_user.id, Appointment.status == "paid")
+        .order_by(Appointment.id.desc())
+    ).scalars().first()
+    if not appt:
+        flash("You don't have a confirmed appointment yet.")
+        return redirect(url_for('booking'))
+    return render_template("appointment.html", user=current_user, appt=appt)
+
+
 @app.route('/safepay/webhook', methods=['POST'])
 def safepay_webhook():
+    """Server-to-server backup: marks the appointment paid even if the customer
+    closes the browser before the redirect above happens."""
     signature = request.headers.get('X-SFPY-SIGNATURE')
     if not signature:
         return jsonify({"error": "Missing signature"}), 400
 
+    raw_body = request.get_data()
     data = request.get_json(silent=True) or {}
-    if not verify_payment(signature, data):
+    if not verify_payment(signature, raw_body, data):
         return jsonify({"error": "Invalid signature"}), 400
 
     app.logger.info("Safepay webhook payload: %r", data)  # inspect real shape
 
-    payload = data.get("data", data)
-    order_id = payload.get("order_id") or payload.get("orderId")
-    state = (payload.get("state") or "").upper()
+    order_id = find_value(data, ("order_id", "orderId"))
+    tracker = find_value(data, ("tracker",))
+    state = (find_value(data, ("state", "status")) or "").upper()
+    event = (find_value(data, ("type", "event")) or "").lower()
+    is_paid = state in PAID_STATES or "succe" in event or "paid" in event
 
-    if order_id and state in ("PAID", "PAYMENT_SUCCESS", "SUCCESS"):
+    if order_id and is_paid:
         appt = db.session.execute(
-            db.select(Appointment).where(Appointment.order_id == order_id)
+            db.select(Appointment).where(Appointment.appt_id == order_id)
         ).scalar()
         if appt and appt.status != "paid":
-            appt.status = "paid"
-            db.session.commit()
+            try:
+                appt.status = "paid"
+                if tracker:
+                    appt.tracker = tracker
+                db.session.commit()
+            except Exception as exc:  # noqa: BLE001
+                db.session.rollback()
+                app.logger.error("Webhook could not update appointment: %s", exc)
+                return jsonify({"error": "db error"}), 500
 
     return jsonify({"message": "ok"}), 200
-    
+
 # -------------------------------------------------------------------------
 if __name__ == "__main__":
     app.run(debug=True)

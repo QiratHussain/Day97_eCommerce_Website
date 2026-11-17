@@ -101,7 +101,7 @@ class User(UserMixin, db.Model):
 class Appointment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    order_id = db.Column(db.String(100), unique=True, index=True)
+    appt_id = db.Column(db.String(100), unique=True, index=True)
     tracker = db.Column(db.String(200))
     amount = db.Column(db.Integer)
     status = db.Column(db.String(20), default="pending")
@@ -183,8 +183,7 @@ def logout():
     logout_user()
     return redirect(url_for("home"))
 
-# safepay system
-
+# ------------------------------- SAFEPAY ROUTES ------------------------------------------
 
 
 @app.route('/checkout', methods=['GET', 'POST'])
@@ -210,8 +209,8 @@ def checkout():
             "source": "custom",
             "webhooks": True,
         })
-        order_id = f"APPOINTMENT_{current_user.id}_{secrets.token_hex(4)}"
-        appt = Appointment(user_id=current_user.id, order_id=order_id,
+        appt_id = f"APPOINTMENT_{current_user.id}_{secrets.token_hex(4)}"
+        appt = Appointment(user_id=current_user.id, appt_id=appt_id,
                            amount=100, status="pending")
         db.session.add(appt)
         db.session.commit()
@@ -226,23 +225,30 @@ def checkout():
 
 @app.route('/safepay/webhook', methods=['POST'])
 def safepay_webhook():
-
-    data = request.get_json(silent=True) or {}
     signature = request.headers.get('X-SFPY-SIGNATURE')
-
     if not signature:
         return jsonify({"error": "Missing signature"}), 400
 
-    is_valid = verify_payment(signature, data)
-
-    if not is_valid:
+    data = request.get_json(silent=True) or {}
+    if not verify_payment(signature, data):
         return jsonify({"error": "Invalid signature"}), 400
 
-    # Next: inspect the verified payment event,
-    # match it to your appointment, and verify its state and amount.
+    app.logger.info("Safepay webhook payload: %r", data)  # inspect real shape
 
-    return jsonify({"message": "Webhook verified"}), 200
+    payload = data.get("data", data)
+    order_id = payload.get("order_id") or payload.get("orderId")
+    state = (payload.get("state") or "").upper()
 
+    if order_id and state in ("PAID", "PAYMENT_SUCCESS", "SUCCESS"):
+        appt = db.session.execute(
+            db.select(Appointment).where(Appointment.order_id == order_id)
+        ).scalar()
+        if appt and appt.status != "paid":
+            appt.status = "paid"
+            db.session.commit()
+
+    return jsonify({"message": "ok"}), 200
+    
 # -------------------------------------------------------------------------
 if __name__ == "__main__":
     app.run(debug=True)

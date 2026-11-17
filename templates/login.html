@@ -2,6 +2,9 @@
 
 {% extends "base.html" %}
 
+{# this page shows flashes itself, so skip the base layout's flash area #}
+{% block flashes %}{% endblock %}
+
 {% block content %}
 
 {{ bootstrap.load_css() }}
@@ -24,4 +27,3 @@
 {{render_form(form)}}
 
 {% endblock %}
-

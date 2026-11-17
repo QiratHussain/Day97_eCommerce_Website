@@ -10,10 +10,16 @@
   <table>
     <thead>
       <td>Name</td>
+      <td>Reference</td>
+      <td>Amount</td>
+      <td>Status</td>
       <td>Time</td>
     </thead>
 <tr>
-  <td>{{user.name}} </td>
+  <td>{{ user.name }}</td>
+  <td>{{ appt.appt_id }}</td>
+  <td>PKR {{ appt.amount }}</td>
+  <td>{{ appt.status|capitalize }}</td>
   <td>anytime</td>
 </tr>
   </table>

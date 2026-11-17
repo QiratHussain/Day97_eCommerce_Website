@@ -100,8 +100,11 @@ class User(UserMixin, db.Model):
 
 class Appointment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    order_id = db.Column(db.String(100), unique=True, index=True)
+    tracker = db.Column(db.String(200))
+    amount = db.Column(db.Integer)
     status = db.Column(db.String(20), default="pending")
-    
 
 # Create tables, but never let a temporary DB problem crash the import itself.
 try:

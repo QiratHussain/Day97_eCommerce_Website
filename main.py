@@ -12,6 +12,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import LoginManager, UserMixin, login_user, current_user, logout_user, login_required
 from flask_bootstrap import Bootstrap5
 from dotenv import load_dotenv
+from safepay_python.safepay import Safepay
 
 load_dotenv()
 
@@ -30,39 +31,25 @@ app.config['SECRET_KEY'] = _secret_key
 Bootstrap5(app)
 
 # ---------------------------- PAYMENTS  ------------------------------------
-from safepay_python.safepay import *
 
-safepay = Safepay({
-    "environment": "sandbox",  
-    "apiKey":os.getenv("API_KEY") ,
-    "v1Secret": os.getenv("SAFEPAY_API_KEY"),
-    "webhookSecret": os.getenv("WEBHOOK_SECRET"),
-})
-payment_response = safepay.set_payment_details({
-    "amount": 100,
-    "currency": "PKR"
-})
-token = payment_response["data"]["token"]
-checkout_url = safepay.get_checkout_url({
-    "beacon": token,
-    "orderId": "ORDER_12345",
-    "redirectUrl": "url_for('checkout')",
-    "cancelUrl": "url_for('checkout')",
-    "source": "custom",
-    "webhooks": True
-})
 
-# Redirect your customer to checkout_url
-print(checkout_url)
+def get_safepay():
+    return Safepay({
+        "environment": "sandbox",
+        "apiKey": os.getenv("SAFEPAY_API_KEY"),
+        "v1Secret": os.getenv("SAFEPAY_V1_SECRET"),
+        "webhookSecret": os.getenv("SAFEPAY_WEBHOOK_SECRET"),
+    })
 
-is_valid = safepay.is_signature_valid({
-    "sig": request_sig,
-    "tracker": token
-})
 
-if is_valid:
-    # Mark the order as paid in your database
-    pass
+# is_valid = safepay.is_signature_valid({
+#     "sig": request_sig,
+#     "tracker": token
+# })
+
+# if is_valid:
+#     # Mark the order as paid in your database
+#     pass
 
 
 # ---------------------------- DATABASE ------------------------------------
@@ -192,12 +179,23 @@ def logout():
 # safepay system
 
 @app.route('/checkout', methods=['GET', 'POST'])
+@login_required
 def checkout():
     if request.method == 'POST':
-        # TODO: create SafePay payment, then redirect to SafePay's page
-        return redirect(url_for('checkout'))
+        sp = get_safepay()
+        resp = sp.set_payment_details({"amount": 100, "currency": "PKR"})
+        token = resp["data"]["token"]
+        url = sp.get_checkout_url({
+            "beacon": token,
+            "orderId": f"ORDER_{current_user.id}_{secrets.token_hex(4)}",
+            "redirectUrl": url_for('booking', _external=True),
+            "cancelUrl": url_for('checkout', _external=True),
+            "source": "custom",
+            "webhooks": True,
+        })
+        return redirect(url)
     return render_template('checkout.html', user=current_user)
-    
+
 
 @app.route('/safepay/webhook', methods=['POST'])
 def safepay_webhook():

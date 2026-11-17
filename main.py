@@ -37,7 +37,7 @@ def get_safepay():
     return Safepay({
         "environment": "sandbox",
         "apiKey": os.getenv("API_KEY"),
-        "v1Secret": os.getenv("SECRET_API_KEY"),
+        "v1Secret": os.getenv("SAFEPAY_API_KEY"),
         "webhookSecret": os.getenv("WEBHOOK_SECRET"),
     })
 

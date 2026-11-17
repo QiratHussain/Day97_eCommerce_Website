@@ -36,9 +36,9 @@ Bootstrap5(app)
 def get_safepay():
     return Safepay({
         "environment": "sandbox",
-        "apiKey": os.getenv("SAFEPAY_API_KEY"),
-        "v1Secret": os.getenv("SAFEPAY_V1_SECRET"),
-        "webhookSecret": os.getenv("SAFEPAY_WEBHOOK_SECRET"),
+        "apiKey": os.getenv("API_KEY"),
+        "v1Secret": os.getenv("SECRET_API_KEY"),
+        "webhookSecret": os.getenv("WEBHOOK_SECRET"),
     })
 
 

@@ -10,6 +10,7 @@ import sys
 import hmac
 import hashlib
 import secrets
+import time
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import LoginManager, UserMixin, login_user, current_user, logout_user, login_required
 from flask_bootstrap import Bootstrap5
@@ -56,25 +57,62 @@ APPOINTMENT_FEE = 100  # PKR
 PAID_STATES = {"PAID", "PAYMENT_SUCCESS", "SUCCESS", "SUCCEEDED", "COMPLETED", "TRACKER_ENDED"}
 
 
-def fetch_tracker(tracker):
-    """Ask Safepay directly about a tracker. Returns its data dict, or None if it can't be fetched.
-
-    This is the authoritative answer to "was this really paid?" and does not
-    depend on the redirect's query string or on which secret is configured.
-    """
+def fetch_tracker_debug(tracker):
+    """Ask Safepay about a tracker. Returns (data_or_None, problem_note_or_None)."""
     token = tracker if tracker.startswith("track_") else f"track_{tracker}"
     url = f"{build_api_url(SAFEPAY_ENV)}/reporter/api/v1/payments/{token}"
     try:
         resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        return resp.json().get("data")
+        if resp.status_code != 200:
+            return None, f"lookup HTTP {resp.status_code}"
+        body = resp.json()
+        data = body.get("data") if isinstance(body, dict) else None
+        if not data:
+            return None, "lookup returned no data"
+        return data, None
     except Exception as exc:  # noqa: BLE001
-        app.logger.error("Could not fetch Safepay tracker %s: %s", token, exc)
-        return None
+        return None, f"lookup error {type(exc).__name__}"
+
+
+def fetch_tracker(tracker):
+    """Like fetch_tracker_debug but returns only the data (None if it can't be fetched).
+
+    This is the authoritative answer to "was this really paid?" and does not
+    depend on the redirect's query string or on which secret is configured.
+    """
+    data, note = fetch_tracker_debug(tracker)
+    if note:
+        app.logger.error("Could not fetch Safepay tracker %s: %s", tracker, note)
+    return data
+
+
+def tracker_state(info):
+    """The tracker's state, wherever Safepay nests it (data.state or data.tracker.state)."""
+    return (find_value(info, ("state",)) or "").upper() if info else ""
 
 
 def tracker_is_paid(info):
-    return bool(info) and str(info.get("state", "")).upper() in PAID_STATES
+    return tracker_state(info) in PAID_STATES
+
+
+def signature_report(sig, tracker):
+    """Which of OUR configured secrets (by name) produces this redirect's sig. Diagnostic only."""
+    if not sig:
+        return "no sig in the redirect"
+    matches = []
+    for name in ("SAFEPAY_API_KEY", "WEBHOOK_SECRET", "API_KEY"):
+        secret = os.getenv(name)
+        if not secret:
+            continue
+        mine = hmac.new(secret.encode("utf-8"), tracker.encode("utf-8"), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(mine, sig):
+            matches.append(name)
+    if matches == ["SAFEPAY_API_KEY"]:
+        return "sig valid"
+    if matches:
+        return "sig matches " + "/".join(matches) + " instead of SAFEPAY_API_KEY"
+    missing = [n for n in ("SAFEPAY_API_KEY", "WEBHOOK_SECRET", "API_KEY") if not os.getenv(n)]
+    return "sig matches none of your env vars" + (f" (not set: {', '.join(missing)})" if missing else "")
 
 
 def verify_payment(signature, raw_body, data):
@@ -416,12 +454,23 @@ def payment_success():
         except Exception as exc:  # noqa: BLE001
             app.logger.error("Safepay signature check failed: %s", exc)
 
-    tracker_info = fetch_tracker(tracker)
+    # Safepay can redirect a moment before the tracker flips to its paid state,
+    # so look again a couple of times before giving up.
+    tracker_info, lookup_note = None, None
+    for attempt in range(3):
+        tracker_info, lookup_note = fetch_tracker_debug(tracker)
+        if signature_ok or tracker_is_paid(tracker_info):
+            break
+        if attempt < 2:
+            time.sleep(1.5)
     paid_by_safepay = tracker_is_paid(tracker_info)
-    app.logger.info("Payment check: signature_ok=%s tracker_state=%r paid_by_safepay=%s env_set=%s",
-                    signature_ok, (tracker_info or {}).get("state"), paid_by_safepay, secret_cfg)
+    state = tracker_state(tracker_info)
+    sig_note = signature_report(sig, tracker)
+    app.logger.info("Payment check: signature_ok=%s (%s) tracker_state=%r lookup_note=%r env_set=%s",
+                    signature_ok, sig_note, state, lookup_note, secret_cfg)
     if not (signature_ok or paid_by_safepay):
-        flash("Payment could not be verified.")
+        why = f"{sig_note}; Safepay: {lookup_note or ('state ' + (state or 'missing'))}"
+        flash(f"Payment could not be verified ({why}).")
         return redirect(url_for('checkout'))
 
     proven_order_id = find_value((tracker_info or {}).get("metadata"), ("order_id", "orderId"))

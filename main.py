@@ -51,11 +51,12 @@ def get_safepay():
         "webhookSecret": os.getenv("WEBHOOK_SECRET"),
     })
 
-# With webhooks=true Safepay appears to confirm payments by webhook INSTEAD of
-# adding a signed `sig` to the redirect (your redirect arrived with no sig).
-# Default is off so the redirect carries `sig` and can be verified directly.
-# Set SAFEPAY_USE_WEBHOOKS=true in the environment to switch webhook mode back on.
-USE_WEBHOOKS = os.getenv("SAFEPAY_USE_WEBHOOKS", "false").strip().lower() == "true"
+# webhooks=true is what the checkout used when payments last went through
+# Safepay's card step, so it is the default. In this mode the redirect arrives
+# WITHOUT a signed `sig`, so payments are confirmed by the webhook
+# (/safepay/webhook) and by the tracker lookup instead.
+# Set SAFEPAY_USE_WEBHOOKS=false to ask Safepay for a signed redirect instead.
+USE_WEBHOOKS = os.getenv("SAFEPAY_USE_WEBHOOKS", "true").strip().lower() == "true"
 
 APPOINTMENT_FEE = 100  # PKR
 

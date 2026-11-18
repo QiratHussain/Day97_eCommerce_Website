@@ -40,7 +40,11 @@ Bootstrap5(app)
 # ---------------------------- PAYMENTS  ------------------------------------
 
 
-SAFEPAY_ENV = "sandbox"
+# "sandbox" for testing, "production" for real payments (use the matching keys).
+SAFEPAY_ENV = os.getenv("SAFEPAY_ENV", "sandbox").strip().lower()
+# Sandbox-only shortcut (see payment_success). Set SAFEPAY_ALLOW_UNVERIFIED=false
+# to test the real confirmation path (webhook) while still in sandbox.
+ALLOW_UNVERIFIED = os.getenv("SAFEPAY_ALLOW_UNVERIFIED", "true").strip().lower() == "true"
 
 
 def get_safepay():
@@ -133,6 +137,23 @@ def signature_report(sig, tracker):
         return "sig matches " + "/".join(matches) + " instead of SAFEPAY_API_KEY"
     missing = [n for n in ("SAFEPAY_API_KEY", "WEBHOOK_SECRET", "API_KEY") if not os.getenv(n)]
     return "sig matches none of your env vars" + (f" (not set: {', '.join(missing)})" if missing else "")
+
+
+def wait_for_webhook(appt_id, tries=3, delay=1.5):
+    """After a redirect we could not verify, give the webhook a moment to mark the row paid."""
+    if not appt_id or not current_user.is_authenticated:
+        return False
+    for attempt in range(tries):
+        db.session.expire_all()
+        appt = db.session.execute(
+            db.select(Appointment).where(Appointment.appt_id == appt_id,
+                                         Appointment.user_id == current_user.id)
+        ).scalar()
+        if appt and appt.status == "paid":
+            return True
+        if attempt < tries - 1:
+            time.sleep(delay)
+    return False
 
 
 def verify_payment(signature, raw_body, data):
@@ -498,10 +519,15 @@ def payment_success():
         # real payments must be confirmed by sig, lookup or webhook.
         # Skipped when Safepay positively says the payment is not paid.
         safepay_says_unpaid = bool(state) and not paid_by_safepay
-        if SAFEPAY_ENV == "sandbox" and current_user.is_authenticated and not safepay_says_unpaid:
+        if (SAFEPAY_ENV == "sandbox" and ALLOW_UNVERIFIED
+                and current_user.is_authenticated and not safepay_says_unpaid):
             unverified = True
             app.logger.warning("SANDBOX FALLBACK: accepting UNVERIFIED payment (%s) tracker=%s", why, tracker)
         else:
+            # Webhook mode: Safepay confirms server-to-server, often a few seconds
+            # after the customer is redirected. Wait briefly for it.
+            if USE_WEBHOOKS and wait_for_webhook(session.get("pending_appt_id")):
+                return redirect(url_for('appointment'))
             flash(f"Payment could not be verified ({why}).")
             return redirect(url_for('checkout'))
 

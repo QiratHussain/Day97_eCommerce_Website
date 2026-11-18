@@ -209,12 +209,17 @@ def sync_appointment_table():
                 conn.execute(text(f'ALTER TABLE appointment ADD COLUMN "{name}" {col_type}'))
                 print(f"INFO: added missing column appointment.{name}", file=sys.stderr)
 
-        # Old columns the app no longer writes must not block inserts.
+        # Old columns the app no longer writes must not block inserts. This also
+        # covers columns we DO have but that an older version made NOT NULL
+        # (e.g. tracker, which is only known after payment).
         if is_postgres:
             for name, col in existing.items():
-                if name not in model_cols and not col["nullable"]:
+                if col["nullable"] or name == "id":
+                    continue
+                model_col = model_cols.get(name)
+                if model_col is None or model_col.nullable:
                     conn.execute(text(f'ALTER TABLE appointment ALTER COLUMN "{name}" DROP NOT NULL'))
-                    print(f"INFO: made legacy column appointment.{name} nullable", file=sys.stderr)
+                    print(f"INFO: made appointment.{name} nullable", file=sys.stderr)
 
     # appt_id is how redirects/webhooks find a row, so keep it unique.
     try:
@@ -304,6 +309,31 @@ def logout():
     logout_user()
     return redirect(url_for("home"))
 
+def save_pending_appointment(appt_id):
+    """Insert the pending appointment row. Returns None on success, else the exception.
+
+    The startup schema repair can silently fail on serverless cold starts, so if
+    the first insert fails we run the repair again and retry once.
+    """
+    last_exc = None
+    for attempt in (1, 2):
+        try:
+            db.session.add(Appointment(user_id=current_user.id, appt_id=appt_id,
+                                       amount=APPOINTMENT_FEE, status="pending"))
+            db.session.commit()
+            return None
+        except Exception as exc:  # noqa: BLE001
+            db.session.rollback()
+            last_exc = exc
+            app.logger.exception("Saving pending appointment failed (attempt %s): %s", attempt, exc)
+            if attempt == 1:
+                try:
+                    sync_appointment_table()
+                except Exception as sync_exc:  # noqa: BLE001
+                    app.logger.error("Schema repair failed: %s", sync_exc)
+    return last_exc
+
+
 # ------------------------------- SAFEPAY ROUTES ------------------------------------------
 
 
@@ -325,17 +355,12 @@ def checkout():
         # One id, used both as our appointment reference and as Safepay's order_id,
         # so the redirect and the webhook can find this exact row later.
         appt_id = f"APPOINTMENT_{current_user.id}_{secrets.token_hex(4)}"
-        try:
-            db.session.add(Appointment(user_id=current_user.id, appt_id=appt_id,
-                                       amount=APPOINTMENT_FEE, status="pending"))
-            db.session.commit()
-            # Backup for when Safepay's redirect doesn't carry our order id back.
-            session["pending_appt_id"] = appt_id
-        except Exception as exc:  # noqa: BLE001
-            db.session.rollback()
-            app.logger.exception("Could not save pending appointment: %s", exc)
-            flash("Couldn't save your appointment. Please try again.")
+        save_error = save_pending_appointment(appt_id)
+        if save_error is not None:
+            flash(f"Couldn't save your appointment ({type(save_error).__name__}). Please try again.")
             return redirect(url_for('checkout'))
+        # Backup for when Safepay's redirect doesn't carry our order id back.
+        session["pending_appt_id"] = appt_id
 
         url = sp.get_checkout_url({
             "beacon": token,
@@ -349,27 +374,34 @@ def checkout():
     return render_template('checkout.html', user=current_user)
 
 
-@app.route('/payment/success')
-@login_required
+@app.route('/payment/success', methods=['GET', 'POST'])
 def payment_success():
     """Safepay sends the customer here after a successful payment.
 
-    The only thing we truly need from the redirect is the `tracker`. `sig` and
-    `order_id` are used when present, but the redirect is not guaranteed to
-    carry them, so we no longer fail just because they are missing.
-
-    Proof of payment (either is enough):
-      1. `sig` is a valid HMAC of the tracker with our shared secret, or
+    Deliberately NOT @login_required: the customer's login cookie can be lost on
+    the way back from Safepay (e.g. SECRET_KEY unset on serverless, or a
+    cross-site POST), and that used to mean the payment was never recorded.
+    The payment itself is proven by Safepay, not by our session:
+      1. `sig` is a valid HMAC of the tracker with our secret, or
       2. Safepay itself reports the tracker as paid.
+    Which appointment it belongs to comes from what Safepay recorded against
+    the tracker. Only if that is unavailable do we fall back to the redirect's
+    order_id / our session, and then only for a logged-in owner.
     """
-    app.logger.info("Safepay redirect args: %r", dict(request.args))
-    sig = request.args.get("sig")
-    tracker = request.args.get("tracker")
-    order_id = request.args.get("order_id") or request.args.get("orderId")
+    args = request.values  # query string and form body (Safepay may use either)
+    app.logger.info("Safepay redirect (%s): %r | logged_in=%s",
+                    request.method, dict(args), current_user.is_authenticated)
+    sig = args.get("sig")
+    tracker = args.get("tracker")
+    order_id = args.get("order_id") or args.get("orderId")
     if not tracker:
         flash("We couldn't confirm your payment: no payment reference came back from Safepay. "
               "If you were charged, please contact us.")
         return redirect(url_for('checkout'))
+
+    secret_cfg = {k: bool(os.getenv(k)) for k in ("API_KEY", "SAFEPAY_API_KEY", "WEBHOOK_SECRET")}
+    if os.getenv("SAFEPAY_API_KEY") and os.getenv("SAFEPAY_API_KEY") == os.getenv("API_KEY"):
+        app.logger.warning("SAFEPAY_API_KEY equals API_KEY: the v1 secret is probably the public key.")
 
     signature_ok = False
     if sig:
@@ -379,26 +411,33 @@ def payment_success():
             app.logger.error("Safepay signature check failed: %s", exc)
 
     tracker_info = fetch_tracker(tracker)
-    if not (signature_ok or tracker_is_paid(tracker_info)):
+    paid_by_safepay = tracker_is_paid(tracker_info)
+    app.logger.info("Payment check: signature_ok=%s tracker_state=%r paid_by_safepay=%s env_set=%s",
+                    signature_ok, (tracker_info or {}).get("state"), paid_by_safepay, secret_cfg)
+    if not (signature_ok or paid_by_safepay):
         flash("Payment could not be verified.")
         return redirect(url_for('checkout'))
 
-    # Which appointment is this for? Prefer what Safepay recorded against the
-    # tracker, then the redirect's order_id, then what we stored at checkout.
     proven_order_id = find_value((tracker_info or {}).get("metadata"), ("order_id", "orderId"))
-    order_id = proven_order_id or order_id or session.get("pending_appt_id")
+    authed = current_user.is_authenticated
+    if not proven_order_id and not authed:
+        flash("Your payment went through. Please log in to finish confirming your appointment.")
+        return redirect(url_for('login'))
 
-    query = db.select(Appointment).where(Appointment.user_id == current_user.id)
+    order_id = proven_order_id or order_id or session.get("pending_appt_id")
+    query = db.select(Appointment)
     if order_id:
         query = query.where(Appointment.appt_id == order_id)
     else:
-        # Last resort: this user's newest unpaid appointment.
-        query = query.where(Appointment.status == "pending").order_by(Appointment.id.desc())
+        # Last resort (logged-in only here): this user's newest unpaid appointment.
+        query = (query.where(Appointment.user_id == current_user.id, Appointment.status == "pending")
+                 .order_by(Appointment.id.desc()))
     appt = db.session.execute(query).scalars().first()
     if not appt:
+        app.logger.error("No appointment found for order_id=%r tracker=%s", order_id, tracker)
         flash("We couldn't find that appointment.")
         return redirect(url_for('booking'))
-    if proven_order_id and proven_order_id != appt.appt_id:
+    if not proven_order_id and appt.user_id != current_user.id:
         flash("That payment belongs to a different appointment.")
         return redirect(url_for('booking'))
 
@@ -416,9 +455,10 @@ def payment_success():
             appt.status = "paid"
             appt.tracker = tracker
             db.session.commit()
+            app.logger.info("Appointment %s marked paid (tracker %s)", appt.appt_id, tracker)
         except Exception as exc:  # noqa: BLE001
             db.session.rollback()
-            app.logger.error("Could not mark appointment paid: %s", exc)
+            app.logger.exception("Could not mark appointment paid: %s", exc)
             flash("Payment received, but we couldn't save it. Please contact us.")
             return redirect(url_for('booking'))
 

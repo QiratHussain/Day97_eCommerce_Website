@@ -65,26 +65,33 @@ PAID_STATES = {"PAID", "PAYMENT_SUCCESS", "SUCCESS", "SUCCEEDED", "COMPLETED", "
 
 
 def fetch_tracker_debug(tracker):
-    """Ask Safepay about a tracker. Returns (data_or_None, problem_note_or_None)."""
+    """Ask Safepay about a tracker. Returns (data_or_None, problem_note_or_None).
+
+    Safepay answered 401 to an anonymous lookup and 500 to one carrying our
+    secret, so both variants are tried before giving up.
+    """
     token = tracker if tracker.startswith("track_") else f"track_{tracker}"
     url = f"{build_api_url(SAFEPAY_ENV)}/reporter/api/v1/payments/{token}"
-    try:
-        headers = {}
-        secret = os.getenv("SAFEPAY_API_KEY")
-        if secret:
-            # Safepay answered 401 to the anonymous call. This header name is
-            # what Safepay's merchant plugins use; it is best effort.
-            headers["X-SFPY-MERCHANT-SECRET"] = secret
-        resp = requests.get(url, headers=headers, timeout=10)
-        if resp.status_code != 200:
-            return None, f"lookup HTTP {resp.status_code}"
-        body = resp.json()
-        data = body.get("data") if isinstance(body, dict) else None
-        if not data:
-            return None, "lookup returned no data"
-        return data, None
-    except Exception as exc:  # noqa: BLE001
-        return None, f"lookup error {type(exc).__name__}"
+    variants = []
+    secret = os.getenv("SAFEPAY_API_KEY")
+    if secret:
+        variants.append({"X-SFPY-MERCHANT-SECRET": secret})
+    variants.append({})
+    note = None
+    for headers in variants:
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                note = f"lookup HTTP {resp.status_code}"
+                continue
+            body = resp.json()
+            data = body.get("data") if isinstance(body, dict) else None
+            if data:
+                return data, None
+            note = "lookup returned no data"
+        except Exception as exc:  # noqa: BLE001
+            note = f"lookup error {type(exc).__name__}"
+    return None, note
 
 
 def fetch_tracker(tracker):
@@ -481,10 +488,22 @@ def payment_success():
     sig_note = signature_report(sig, tracker)
     app.logger.info("Payment check: signature_ok=%s (%s) tracker_state=%r lookup_note=%r env_set=%s",
                     signature_ok, sig_note, state, lookup_note, secret_cfg)
+    unverified = False
     if not (signature_ok or paid_by_safepay):
         why = f"{sig_note}; Safepay: {lookup_note or ('state ' + (state or 'missing'))}"
-        flash(f"Payment could not be verified ({why}).")
-        return redirect(url_for('checkout'))
+        # SANDBOX ONLY: no real money moves here, and Safepay's sandbox lookup
+        # is unreliable (401/500), so a logged-in customer who came back from
+        # Safepay with a tracker is accepted. This is NOT proof of payment.
+        # It is switched off automatically when SAFEPAY_ENV is not "sandbox";
+        # real payments must be confirmed by sig, lookup or webhook.
+        # Skipped when Safepay positively says the payment is not paid.
+        safepay_says_unpaid = bool(state) and not paid_by_safepay
+        if SAFEPAY_ENV == "sandbox" and current_user.is_authenticated and not safepay_says_unpaid:
+            unverified = True
+            app.logger.warning("SANDBOX FALLBACK: accepting UNVERIFIED payment (%s) tracker=%s", why, tracker)
+        else:
+            flash(f"Payment could not be verified ({why}).")
+            return redirect(url_for('checkout'))
 
     proven_order_id = find_value((tracker_info or {}).get("metadata"), ("order_id", "orderId"))
     authed = current_user.is_authenticated
@@ -523,7 +542,10 @@ def payment_success():
             appt.status = "paid"
             appt.tracker = tracker
             db.session.commit()
-            app.logger.info("Appointment %s marked paid (tracker %s)", appt.appt_id, tracker)
+            app.logger.info("Appointment %s marked paid (tracker %s, verified=%s)",
+                            appt.appt_id, tracker, not unverified)
+            if unverified:
+                flash("Payment recorded (sandbox mode: Safepay could not confirm it independently).")
         except Exception as exc:  # noqa: BLE001
             db.session.rollback()
             app.logger.exception("Could not mark appointment paid: %s", exc)

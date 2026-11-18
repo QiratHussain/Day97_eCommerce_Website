@@ -51,6 +51,12 @@ def get_safepay():
         "webhookSecret": os.getenv("WEBHOOK_SECRET"),
     })
 
+# With webhooks=true Safepay appears to confirm payments by webhook INSTEAD of
+# adding a signed `sig` to the redirect (your redirect arrived with no sig).
+# Default is off so the redirect carries `sig` and can be verified directly.
+# Set SAFEPAY_USE_WEBHOOKS=true in the environment to switch webhook mode back on.
+USE_WEBHOOKS = os.getenv("SAFEPAY_USE_WEBHOOKS", "false").strip().lower() == "true"
+
 APPOINTMENT_FEE = 100  # PKR
 
 # TRACKER_ENDED is the state Safepay's own docs show on a paid tracker.
@@ -62,7 +68,13 @@ def fetch_tracker_debug(tracker):
     token = tracker if tracker.startswith("track_") else f"track_{tracker}"
     url = f"{build_api_url(SAFEPAY_ENV)}/reporter/api/v1/payments/{token}"
     try:
-        resp = requests.get(url, timeout=10)
+        headers = {}
+        secret = os.getenv("SAFEPAY_API_KEY")
+        if secret:
+            # Safepay answered 401 to the anonymous call. This header name is
+            # what Safepay's merchant plugins use; it is best effort.
+            headers["X-SFPY-MERCHANT-SECRET"] = secret
+        resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code != 200:
             return None, f"lookup HTTP {resp.status_code}"
         body = resp.json()
@@ -412,7 +424,7 @@ def checkout():
             "redirectUrl": url_for('payment_success', _external=True),
             "cancelUrl": url_for('checkout', _external=True),
             "source": "custom",
-            "webhooks": True,
+            "webhooks": USE_WEBHOOKS,
         })
         return redirect(url)
     return render_template('checkout.html', user=current_user)

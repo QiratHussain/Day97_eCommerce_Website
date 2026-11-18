@@ -1,7 +1,7 @@
 from flask import Flask, render_template, redirect, url_for, flash, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import Integer, String, inspect, text
+from sqlalchemy import Integer, String, inspect
 from flask_wtf import FlaskForm
 from wtforms import StringField, PasswordField, SubmitField, EmailField
 from wtforms.validators import DataRequired, Length
@@ -174,6 +174,7 @@ class User(UserMixin, db.Model):
     password: Mapped[str] = mapped_column(String(250), nullable=False)
 
 class Appointment(db.Model):
+    # Rebuilt from scratch by db.create_all(); no legacy layout to work around.
     __tablename__ = "appointment"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
@@ -184,60 +185,64 @@ class Appointment(db.Model):
     amount = db.Column(db.Integer)
     status = db.Column(db.String(20), default="pending")
 
-def sync_appointment_table():
-    """Bring an already-existing `appointment` table in line with the model.
+_tables_ready = False
 
-    db.create_all() only creates MISSING tables; it never alters existing ones.
-    If the table was created by an older version of this app, it can lack the
-    current columns (e.g. appt_id) or still have old NOT NULL columns (e.g.
-    order_id) that we no longer fill in, and every INSERT then fails.
-    This only ADDS missing columns and RELAXES leftover NOT NULL constraints;
-    it never drops columns or deletes data.
+
+def check_schema():
+    """Compare every model table with the real database and log any mismatch.
+
+    Returns a list of problems (empty list = everything matches).
     """
+    problems = []
     insp = inspect(db.engine)
-    if not insp.has_table("appointment"):
-        return
-
-    existing = {col["name"]: col for col in insp.get_columns("appointment")}
-    model_cols = {col.name: col for col in Appointment.__table__.columns}
-    is_postgres = db.engine.dialect.name == "postgresql"
-
-    with db.engine.begin() as conn:
-        for name, col in model_cols.items():
-            if name not in existing and not col.primary_key:
-                col_type = col.type.compile(dialect=db.engine.dialect)
-                conn.execute(text(f'ALTER TABLE appointment ADD COLUMN "{name}" {col_type}'))
-                print(f"INFO: added missing column appointment.{name}", file=sys.stderr)
-
-        # Old columns the app no longer writes must not block inserts. This also
-        # covers columns we DO have but that an older version made NOT NULL
-        # (e.g. tracker, which is only known after payment).
-        if is_postgres:
-            for name, col in existing.items():
-                if col["nullable"] or name == "id":
-                    continue
-                model_col = model_cols.get(name)
-                if model_col is None or model_col.nullable:
-                    conn.execute(text(f'ALTER TABLE appointment ALTER COLUMN "{name}" DROP NOT NULL'))
-                    print(f"INFO: made appointment.{name} nullable", file=sys.stderr)
-
-    # appt_id is how redirects/webhooks find a row, so keep it unique.
-    try:
-        with db.engine.begin() as conn:
-            conn.execute(text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS ix_appointment_appt_id ON appointment (appt_id)"
-            ))
-    except Exception as exc:  # noqa: BLE001
-        print(f"WARNING: could not add unique index on appointment.appt_id: {exc}", file=sys.stderr)
+    for table in db.metadata.sorted_tables:
+        if not insp.has_table(table.name):
+            problems.append(f"table {table.name} is missing")
+            continue
+        existing = {c["name"] for c in insp.get_columns(table.name)}
+        missing = [c.name for c in table.columns if c.name not in existing]
+        if missing:
+            problems.append(f"table {table.name} is missing columns {missing}")
+    return problems
 
 
-# Create tables, but never let a temporary DB problem crash the import itself.
+def ensure_tables():
+    """Create every table defined by the models, then verify they match.
+
+    Safe to call repeatedly. Used at startup and again lazily on the first
+    request, because on serverless hosts the startup attempt can fail
+    (cold DB, network blip) and would otherwise never be retried.
+    """
+    global _tables_ready
+    if _tables_ready:
+        return True
+    db.create_all()
+    problems = check_schema()
+    for problem in problems:
+        print(f"SCHEMA MISMATCH: {problem}", file=sys.stderr)
+    if problems:
+        print("Drop the mismatching tables so they are rebuilt from the models.", file=sys.stderr)
+        return False
+    names = ", ".join(t.name for t in db.metadata.sorted_tables)
+    print(f"INFO: database tables OK: {names}", file=sys.stderr)
+    _tables_ready = True
+    return True
+
+
 try:
     with app.app_context():
-        db.create_all()
-        sync_appointment_table()
+        ensure_tables()
 except Exception as exc:  # noqa: BLE001
     print(f"WARNING: could not create tables at startup: {exc}", file=sys.stderr)
+
+
+@app.before_request
+def make_sure_tables_exist():
+    if not _tables_ready:
+        try:
+            ensure_tables()
+        except Exception as exc:  # noqa: BLE001
+            app.logger.error("Could not create tables: %s", exc)
 
 # ---------------------------- LOG IN MANAGER ------------------------------------
 login_manager = LoginManager()
@@ -312,8 +317,8 @@ def logout():
 def save_pending_appointment(appt_id):
     """Insert the pending appointment row. Returns None on success, else the exception.
 
-    The startup schema repair can silently fail on serverless cold starts, so if
-    the first insert fails we run the repair again and retry once.
+    If the first insert fails (e.g. tables were not created at cold start) we
+    create the tables again and retry once.
     """
     last_exc = None
     for attempt in (1, 2):
@@ -328,9 +333,9 @@ def save_pending_appointment(appt_id):
             app.logger.exception("Saving pending appointment failed (attempt %s): %s", attempt, exc)
             if attempt == 1:
                 try:
-                    sync_appointment_table()
+                    ensure_tables()
                 except Exception as sync_exc:  # noqa: BLE001
-                    app.logger.error("Schema repair failed: %s", sync_exc)
+                    app.logger.error("Creating tables failed: %s", sync_exc)
     return last_exc
 
 
@@ -357,7 +362,8 @@ def checkout():
         appt_id = f"APPOINTMENT_{current_user.id}_{secrets.token_hex(4)}"
         save_error = save_pending_appointment(appt_id)
         if save_error is not None:
-            flash(f"Couldn't save your appointment ({type(save_error).__name__}). Please try again.")
+            reason = str(getattr(save_error, "orig", save_error)).replace("\n", " ")[:160]
+            flash(f"Couldn't save your appointment ({type(save_error).__name__}: {reason}). Please try again.")
             return redirect(url_for('checkout'))
         # Backup for when Safepay's redirect doesn't carry our order id back.
         session["pending_appt_id"] = appt_id
